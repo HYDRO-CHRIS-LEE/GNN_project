@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # Graph WaveNet Model
+# Matrix multiplication
 class nconv(nn.Module):
     def __init__(self):
         super(nconv, self).__init__()
@@ -26,7 +27,7 @@ class gcn(nn.Module):
         c_in = (order * support_len + 1) * c_in
         self.mlp = linear(c_in, c_out)
         self.dropout = dropout
-        self.order = order
+        self.order = order # nubmer of hops
 
     def forward(self, x, support):
         out = [x]
@@ -48,38 +49,48 @@ class gwnet(nn.Module):
                  residual_channels=32, dilation_channels=32, skip_channels=256, end_channels=512,
                  kernel_size=2):
         super(gwnet, self).__init__()
+        #------------------------------------------------------#
         self.dropout = dropout
         self.blocks = blocks
         self.layers = layers
         self.gcn_bool = gcn_bool
-        self.addaptadj = addaptadj
-
-        self.filter_convs = nn.ModuleList()
-        self.gate_convs = nn.ModuleList()
-        self.residual_convs = nn.ModuleList()
-        self.skip_convs = nn.ModuleList()
-        self.bn = nn.ModuleList()
+        self.addaptadj = addaptadj  # Adaptive Adjacency Matrix
+        self.supports = supports    # Initial Adjacency Matrix Information
+        #------------------------------------------------------#
+        ## TGCN
+        self.filter_convs = nn.ModuleList() # dilated convolution filter
+        self.gate_convs = nn.ModuleList()   # dilated convolution gate
+        #------------------------------------------------------#
+        ## GCN
         self.gconv = nn.ModuleList()
-
+        #------------------------------------------------------#
+        ## etc
+        self.residual_convs = nn.ModuleList() # residual convolution (1x1)
+        self.skip_convs = nn.ModuleList() # skip connection convolution (1x1)
+        self.bn = nn.ModuleList() # batch normalization
         self.start_conv = nn.Conv2d(in_channels=in_dim,
                                     out_channels=residual_channels,
-                                    kernel_size=(1, 1))
-        self.supports = supports
+                                    kernel_size=(1, 1)) # initial convolution layer (1x1)
 
+        #------------------------------------------------------#
+        ## Build the model's layers
         receptive_field = 1
-
         self.supports_len = 0
         if supports is not None:
             self.supports_len += len(supports)
 
+        ## Create the initial node embeddings
         if gcn_bool and addaptadj:
-            if aptinit is None:
+            # Random Initialization
+            if aptinit is None: 
                 if supports is None:
                     self.supports = []
                 self.nodevec1 = nn.Parameter(torch.randn(num_nodes, 10).to(device), requires_grad=True).to(device)
                 self.nodevec2 = nn.Parameter(torch.randn(10, num_nodes).to(device), requires_grad=True).to(device)
                 self.supports_len += 1
-            else:
+
+            # Pretrained Initialization
+            else: 
                 if supports is None:
                     self.supports = []
                 m, p, n = torch.svd(aptinit)
@@ -130,48 +141,76 @@ class gwnet(nn.Module):
     def forward(self, input, supports):
         in_len = input.size(3)
 
-        # Input sequence padding if shorter than receptive_field
+        # (1) zero-padding
         if in_len < self.receptive_field:
             x = nn.functional.pad(input, (self.receptive_field - in_len, 0, 0, 0))
         else:
             x = input
 
+        # (2) initial convolution layer (1x1)
         x = self.start_conv(x)
         skip = 0
 
+        # (3) Calculate the appropriate "adaptive adjacency matrix" at every iteration
+        ## (3-1) self.support : initial adjacency matrix
+        ## (3-2) adp : updated adjacency matrix
+        ## (3-3) new_supports : updated adjacency matrix list
         new_supports = None
         if self.gcn_bool and self.addaptadj and self.supports is not None:
             adp = F.softmax(F.relu(torch.mm(self.nodevec1, self.nodevec2)), dim=1)
             new_supports = self.supports + [adp]
 
+        # (4) WaveNet
+        
+            #            |----------------------------------------|     *residual*
+            #            |                                        |
+            #            |    |-- conv -- tanh --|                |
+            # -> dilate -|----|                  * ----|-- 1x1 -- + -->	*input*
+            #                 |-- conv -- sigm --|     |
+            #                                         1x1
+            #                                          |
+            # ---------------------------------------> + ------------->	*skip*
+
+        
         for i in range(self.blocks * self.layers):
+            # (4-1) TCN (Dilated Convolution)
             residual = x
+
+            # TCN-a
             filter = self.filter_convs[i](residual)
             filter = torch.tanh(filter)
+            # TCN-b
             gate = self.gate_convs[i](residual)
             gate = torch.sigmoid(gate)
+            # TCN-a & TCN-b
             x = filter * gate
 
+            # (4-2) Parameterized Skip Connection
             s = x
-            s = self.skip_convs[i](s)
+            s = self.skip_convs[i](s) # 1x1 convolution for dimension matching
             if isinstance(skip, int):
                 skip = s
             else:
                 skip = skip[:, :, :, -s.size(3):]
                 skip = s + skip
-
+            
+            # (4-3) GCN (Calculate adaptive adjacency matrix)
             if self.gcn_bool and self.supports is not None:
+                # case1: use adaptive adjacency matrix
                 if self.addaptadj:
                     x = self.gconv[i](x, new_supports)
+                # case2: use initial adjacency matrix
                 else:
                     x = self.gconv[i](x, self.supports)
+            # case3: not use GCN
             else:
                 x = self.residual_convs[i](x)
 
+            # (4-4) Residual Connection
             x = x + residual[:, :, :, -x.size(3):]
             x = self.bn[i](x)
 
-        # Truncate to the original temporal length
+        # (4-5) Truncate to the original temporal length
         x = x[:, :, :, :in_len]
 
         x = F.relu(skip)
