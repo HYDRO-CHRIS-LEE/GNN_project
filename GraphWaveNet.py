@@ -221,3 +221,15 @@ class gwnet(nn.Module):
             x = x.squeeze(-1)
 
         return x
+
+    def get_adaptive_adj(self):
+        """
+        Returns the current adaptive adjacency matrix, if addaptadj == True.
+        Otherwise, returns None.
+        """
+        if self.gcn_bool and self.addaptadj:
+            # This is exactly how we compute 'adp' in forward(...)
+            adp = F.softmax(F.relu(torch.mm(self.nodevec1, self.nodevec2)), dim=1)
+            return adp
+        else:
+            return None

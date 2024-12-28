@@ -185,7 +185,20 @@ def main():
         if (model_name == "ASTGCN"):
             train_astgcn(static_edge_index, num_epochs, model, train_loader, optimizer, loss_fn, store_path)
         elif (model_name == "GWNET"):
-            train_gwnet(num_epochs, model, DEVICE, train_loader, optimizer, loss_fn, supports, store_path)
+            epoch_losses, adaptive_adj_matrices = train_gwnet(
+                num_epochs,
+                model,
+                DEVICE,
+                train_loader,
+                optimizer,
+                loss_fn,
+                supports,
+                store_path
+            )
+            # If desired, save adjacency to a file
+            np.save(f"adap_adj_Model_{model_name}_Input_{input_seq_len}_Adj_{adj_method}_blocks{blocks}_layers{layers}.npy", adaptive_adj_matrices)
+            print("Adaptive adjacency matrices saved to disk.")
+
         elif (model_name == "TGCN"):
             train_tgcn(num_epochs, model, train_loader, optimizer, loader, loss_fn, store_path, DEVICE)
         print("Training complete!")
