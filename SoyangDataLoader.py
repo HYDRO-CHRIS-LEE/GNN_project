@@ -6,7 +6,7 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import torch
 
 class SoYangRiverDatasetLoader(object):
-    def __init__(self, adj, data_dir=os.path.join(os.getcwd(), "Data/ffill_data"), precip_data_path='Data/rainfall/rainfall_1h_final.csv'):
+    def __init__(self, adj, data_dir=os.path.join(os.getcwd(), "Data/ffill_data_rev"), precip_data_path='Data/rainfall_rev/rainfall_1h_final.csv'):
         self.data_dir = data_dir
         self.precip_data_path = precip_data_path
         self.A = None
@@ -16,13 +16,13 @@ class SoYangRiverDatasetLoader(object):
         self.data_center_idx_mapping = {}
 
         if adj == "Euc_down":
-            self._load_adjacency_matrix("Data/adj_matrix/rev2_Euclidean_Distances_downstream.csv")
+            self._load_adjacency_matrix("Data/adj_matrix_rev/rev2_Euclidean_Distances_downstream.csv")
         elif adj == "Euc":
-            self._load_adjacency_matrix("Data/adj_matrix/rev2_Euclidean_Distances.csv")
+            self._load_adjacency_matrix("Data/adj_matrix_rev/rev2_Euclidean_Distances.csv")
         elif adj == "Hyd":
-            self._load_adjacency_matrix("Data/adj_matrix/rev2_Hydrologic_Distances.csv")
+            self._load_adjacency_matrix("Data/adj_matrix_rev/rev2_Hydrologic_Distances.csv")
         elif adj == "Hyd_down":
-            self._load_adjacency_matrix("Data/adj_matrix/rev2_Hydrologic_Distances_downstream.csv")
+            self._load_adjacency_matrix("Data/adj_matrix_rev/rev2_Hydrologic_Distances_downstream.csv")
         else:
             print("Wrong Adj")
             
@@ -44,36 +44,61 @@ class SoYangRiverDatasetLoader(object):
         all_times_precip = set(precip_df.index)
         all_times_features = set()
     
-        # Loop through each file in the data directory for other features
         for filename in os.listdir(self.data_dir):
-            if filename.endswith(".csv"):
+            if not filename.endswith(".csv"):
+                continue
+
+            try:
                 data_center_number = int(filename.split('_')[0])
-                if data_center_number in self.data_center_idx_mapping:
-                    file_path = os.path.join(self.data_dir, filename)
-                    df = pd.read_csv(file_path, usecols=['time', 'discharge', 'water_mark_wl'])
-                    df['time'] = pd.to_datetime(df['time'])
-                    df['year'] = df['time'].dt.year  # Add year flag
-                    df = df.set_index('time').ffill().reset_index()
-                    dataframes[data_center_number] = df
-                    all_times_features.update(df['time'])
+            except (ValueError, IndexError):
+                print(f"Skipping file '{filename}' - unable to parse station number.")
+                continue
+
+            if data_center_number not in self.data_center_idx_mapping:
+                # If station is not in adjacency matrix
+                print(f"Station {data_center_number} not found in adjacency matrix. Skipping.")
+                continue
+
+            file_path = os.path.join(self.data_dir, filename)
+            try:
+                # Parse station data
+                df = pd.read_csv(
+                    file_path,
+                    parse_dates=['time'],    # parse 'time' column
+                    usecols=['time', 'discharge', 'water_mark_wl']
+                )
+                df = df.set_index('time').sort_index()
+                df = df.ffill()  # Forward fill any NaNs
+
+                # Add a 'year' column
+                df['year'] = df.index.year
+
+                dataframes[data_center_number] = df
+                all_times_features.update(df.index)
+
+            except Exception as e:
+                print(f"Error reading file '{filename}': {str(e)}")
+                continue
     
         # Find overlapping times between features, precipitation, and radar data
-        overlapping_times = all_times_features.intersection(all_times_precip)
+        overlapping_times = all_times_precip.intersection(all_times_features)
         if not overlapping_times:
             raise ValueError("No overlapping times found between feature, and precipitation data.")
     
         # Sort and convert to list for reindexing
-        overlapping_times = sorted(list(overlapping_times))
+        overlapping_times = sorted(overlapping_times)
     
         # Combine other features with precipitation and radar data for overlapping times only
-        for center in self.data_center_idx_mapping.keys():
-            if str(center) in precip_df.columns and str(center):
-                if center in dataframes:
-                    center_df = dataframes[center]
-                    center_df = center_df.set_index('time').reindex(overlapping_times).reset_index()
-                    center_df['precipitation'] = precip_df.loc[overlapping_times, str(center)].values
-                    center_df = center_df.ffill()
-                    dataframes[center] = center_df
+        for station_id in self.data_center_idx_mapping.keys():
+            # Precip must have a column that matches the station_id
+            # e.g., precip_df columns are strings like '5001625'
+            if str(station_id) in precip_df.columns and station_id in dataframes:
+                station_df = dataframes[station_id].reindex(overlapping_times)
+                # Add precipitation as a column
+                station_df['precipitation'] = precip_df.loc[overlapping_times, str(station_id)].values
+                # Forward fill after adding precipitation
+                station_df = station_df.ffill()
+                dataframes[station_id] = station_df
     
         # Continue with data preparation for the ML model
         self._prepare_data_for_model(dataframes, overlapping_times)

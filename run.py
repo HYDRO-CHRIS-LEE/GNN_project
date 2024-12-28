@@ -104,7 +104,7 @@ def main():
     parser.add_argument("--time_strides", type=int, default=6, help="Input your time strides for your model. The input time should be divided by time strides.")
     parser.add_argument("--lr", type=float, default=8e-5, help="Input your appropriate learning rate for your model")
     parser.add_argument("--cuda", type=str, default='cuda:0', help="Select your cuda. Input format; cuda:0, cuda:1 ...")
-    parser.add_argument("--station_num", type=int, default=24, help="Input your station numbers")
+    parser.add_argument("--station_num", type=int, default=22, help="Input your station numbers")
     parser.add_argument("--feature_num", type=int, default=4, help="Input your feature number")
     parser.add_argument("--ratio", type=float, default=0.8, help="Train and Test ratio", action="store")
     parser.add_argument("--num_epochs", type=int, default=2000, help="Number of epochs", action="store")
